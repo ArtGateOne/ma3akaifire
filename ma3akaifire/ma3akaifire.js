@@ -1,4 +1,4 @@
-//MA3 Akai Fire control code beta 0.3 by ArtGateOne
+//MA3 Akai Fire control code beta 0.4 by ArtGateOne
 var easymidi = require("easymidi");
 var osc = require("osc");
 var W3CWebSocket = require("websocket").w3cwebsocket;
@@ -100,6 +100,7 @@ udpPort.on("message", function (oscMsg, timeTag, info) {
   if (clear == 0) {
     midiclear();
     clear = 1;
+    output.send("cc", { controller: 33, value: 1, channel: 0 });
     output.send("cc", { controller: 36, value: 2, channel: 0 });
     output.send("cc", { controller: 37, value: 2, channel: 0 });
     output.send("cc", { controller: 38, value: 2, channel: 0 });
@@ -218,6 +219,7 @@ input.on("noteon", function (msg) {
       remoteip,
       remoteport
     );
+    output.send("cc", { controller: 33, value: 2, channel: 0 });
   } else if (msg.note == 36 || msg.note == 37 || msg.note == 38 || msg.note == 39) {
     //change_page(msg.note - 35);
     udpPort.send(
@@ -311,6 +313,7 @@ input.on("noteoff", function (msg) {
       remoteip,
       remoteport
     );
+    output.send("cc", { controller: 33, value: 1, channel: 0 });
   } else if (msg.note >= 54 && msg.note <= 117) {
     //Executors
     if (msg.note >= 54 && msg.note <= 68) {
