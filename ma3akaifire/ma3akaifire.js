@@ -1,4 +1,4 @@
-//MA3 Akai Fire control code beta 0.4 by ArtGateOne
+//MA3 Akai Fire control code beta 0.6 by ArtGateOne
 var easymidi = require("easymidi");
 var osc = require("osc");
 var W3CWebSocket = require("websocket").w3cwebsocket;
@@ -7,10 +7,21 @@ var client = new W3CWebSocket("ws://127.0.0.1:8080?user=Encoder"); //U can chang
 //config
 midi_in = "FL STUDIO FIRE"; //set correct midi in device name
 midi_out = "FL STUDIO FIRE"; //set correct midi in device name
+color_mode = 1; // 0 standard, 1 multicolor, 2 - rainbow
+feedback_mode = 0;  // 0 - light/dark, 1 - blink, 2 - pulse, 3 = rainbow
 localip = "127.0.0.1";
 localport = 8008;
 remoteip = "127.0.0.1";
 remoteport = 8000;
+
+color_exec_empty = "#000001";
+color_exec_off  = "#FF8000";
+color_exec_on = "#00FF00";
+
+if (color_mode == 2) {
+  color_exec_empty = "#000000";
+  color_exec_off = "#020202";
+}
 
 // encoder position map
 const encoderPositions = {
@@ -81,10 +92,22 @@ const keyMap = {
   189: 61,
   190: 62
 };
+
+// tabela dla nut 0–63
+const padTable = Array.from({ length: 64 }, () => ({
+  status: -1,  // -1 brak, 0 obecny, 1 uruchomiony
+  r: 0,
+  g: 0,
+  b: 0
+}));
+
 var grandmaster = 100;
 var BO = 0; //Black Out 0 -off
 var Page = 1;
 var clear = 0;
+let hueBase = 0;       // globalna faza
+let hueStep = 2;       // szybkość przesuwania (° na krok)
+
 
 // Create an osc.js UDP Port listening on port 8000.
 var udpPort = new osc.UDPPort({
@@ -459,48 +482,43 @@ function change_page(page_new) {
 }
 
 function light_executor(note, status, color) {
-  //console.log(color);
-
-  if (status == -1) {
-    var r = 0;
-    var g = 0;
-    var b = 1;
-  } else if (status == 0) {
-    var r = 127;
-    var g = 64;
-    var b = 0;
-  } else if (status == 1) {
-    var r = 0;
-    var g = 127;
-    var b = 0;
-  }
-
-  setPadColor(note, r, g, b);
-
-  /*
-    channel = brightness;
-
-  if (color == "#000000") {
-    if (status == 1) {
-      velocity = color_executor_on;
+  if (color_mode == 0) {
+    if (status == -1) {
+      color = color_exec_empty;
     } else if (status == 0) {
-      velocity = color_executor_off;
-    }
-    else {
-      velocity = color_executor_empty;
+      color = color_exec_off;
+    } else if (status == 1) {
+      color = color_exec_on;
     }
 
-  } else {
-    if (status == 1) {
-      channel = executor_fx;
+    setPadColorHex(note, status, color);
+  } else if (color_mode == 1) {
+    if (color == "#000000") {
+      if (status == -1) {
+        color = color_exec_empty;
+      } else if (status == 0) {
+        color = color_exec_off;
+      } else if (status == 1) {
+        color = color_exec_on;
+      }
     }
-    velocity = getClosestVelocity(color);
+
+    setPadColorHex(note, status, color);
+  } else if (color_mode == 2) {
+    if (status == -1) {
+      color = color_exec_empty;
+    } else if (status == 0) {
+      color = color_exec_off;
+    } else if (status == 1) {
+      const hue = (note * 360) / padTable.length; // równomierne rozłożenie 0–63
+      color = hslToHex(hue, 100, 50); // pełna saturacja, 50% jasności
+    }
+
+    setPadColorHex(note, status, color);
   }
-
-
-  output.send('noteon', { note: note, velocity: velocity, channel: channel });*/
   return;
 }
+
 
 function setPadColor(index, r, g, b) {
   const len = 4;
@@ -523,6 +541,186 @@ function setPadColor(index, r, g, b) {
   ];
   output.send("sysex", syx);
 }
+
+function setPadColorHex(index, status, hex) {
+  hex = hex.replace(/^#/, "");
+
+  // Parsowanie wartości R, G, B (0–255)
+  let r = parseInt(hex.substring(0, 2), 16);
+  let g = parseInt(hex.substring(2, 4), 16);
+  let b = parseInt(hex.substring(4, 6), 16);
+
+  // Skalowanie do zakresu 0–127 (0x7F)
+  r = Math.round(r * 127 / 255);
+  g = Math.round(g * 127 / 255);
+  b = Math.round(b * 127 / 255);
+
+  if (status == 0 && color_mode == 1){
+    r = r * 0.1;
+    g = g * 0.1;
+    b = b * 0.1;
+  }
+
+  // --- zapis do tabeli ---
+  if (index >= 0 && index < padTable.length) {
+    padTable[index].status = status;
+    padTable[index].r = r;
+    padTable[index].g = g;
+    padTable[index].b = b;
+  }
+
+  // --- wysyłanie sysex ---
+  const len = 4;
+  const lenH = (len >> 7) & 0x7f;
+  const lenL = len & 0x7f;
+
+  const syx = [
+    0xf0,
+    0x47,
+    0x7f,
+    0x43,
+    0x65,
+    lenH,
+    lenL,
+    index & 0x7f,
+    r & 0x7f,
+    g & 0x7f,
+    b & 0x7f,
+    0xf7,
+  ];
+
+  output.send("sysex", syx);
+}
+
+let pulseOn = true; // flaga przełączająca ON/OFF
+
+function pulseExecutors() {
+  for (let note = 0; note < padTable.length; note++) {
+    if (padTable[note].status === 1) {
+      if (pulseOn) {
+        // wyślij kolor z tabeli
+        setPadColor(note, padTable[note].r, padTable[note].g, padTable[note].b);
+      } else {
+        // wyślij czarny (OFF)
+        setPadColor(note, 0, 0, 0);
+      }
+    }
+  }
+  // zmiana stanu na następne wywołanie
+  pulseOn = !pulseOn;
+}
+
+//uruchomienie migania co 500 ms
+if (feedback_mode == 1){
+  setInterval(pulseExecutors, 250); //500
+}
+
+
+
+let fade = 1.0;       // aktualny współczynnik jasności (0–1)
+let fadeStep = -0.1;  // krok zmiany (ujemny = ściemnianie, dodatni = rozjaśnianie)
+
+function pulseExecutorsSmooth() {
+  for (let note = 0; note < padTable.length; note++) {
+    if (padTable[note].status === 1) {
+      // oblicz aktualne wartości R/G/B z fade
+      const r = Math.round(padTable[note].r * fade);
+      const g = Math.round(padTable[note].g * fade);
+      const b = Math.round(padTable[note].b * fade);
+
+      setPadColor(note, r, g, b);
+    }
+  }
+
+  // aktualizacja współczynnika fade
+  fade += fadeStep;
+
+  // zmiana kierunku gdy osiągniemy granice
+  if (fade <= 0) {
+    fade = 0;
+    fadeStep = +0.1; // zaczynamy rozjaśniać
+  } else if (fade >= 1) {
+    fade = 1;
+    fadeStep = -0.1; // zaczynamy ściemniać
+  }
+}
+
+// uruchomienie płynnego pulsowania co 80 ms (ok. 12 FPS)
+if (feedback_mode == 2){
+setInterval(pulseExecutorsSmooth, 80);//80
+}
+
+function hslToRgb(h, s, l) {
+  h = h % 360;
+  s /= 100;
+  l /= 100;
+
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+  const m = l - c/2;
+
+  let r=0, g=0, b=0;
+  if (h < 60) { r=c; g=x; b=0; }
+  else if (h < 120) { r=x; g=c; b=0; }
+  else if (h < 180) { r=0; g=c; b=x; }
+  else if (h < 240) { r=0; g=x; b=c; }
+  else if (h < 300) { r=x; g=0; b=c; }
+  else { r=c; g=0; b=x; }
+
+  r = Math.round((r+m) * 127);
+  g = Math.round((g+m) * 127);
+  b = Math.round((b+m) * 127);
+
+  return { r, g, b };
+}
+
+function cycleExecutorsColors() {
+  for (let note = 0; note < padTable.length; note++) {
+    if (padTable[note].status === 1) {
+      // offset hue dla każdego executora
+      const offset = (note * 360) / padTable.length;
+      const { r, g, b } = hslToRgb(hueBase + offset, 100, 50);
+      setPadColor(note, r, g, b);
+    }
+  }
+
+  // przesuwamy globalny hue
+  hueBase += hueStep;
+  if (hueBase >= 360) hueBase = 0;
+}
+
+
+if (feedback_mode == 3){
+  setInterval(cycleExecutorsColors, 100); // co 100 ms zmiana hue
+}
+
+function hslToHex(h, s, l) {
+  h = h % 360;
+  s /= 100;
+  l /= 100;
+
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+  const m = l - c/2;
+
+  let r=0, g=0, b=0;
+  if (h < 60) { r=c; g=x; b=0; }
+  else if (h < 120) { r=x; g=c; b=0; }
+  else if (h < 180) { r=0; g=c; b=x; }
+  else if (h < 240) { r=0; g=x; b=c; }
+  else if (h < 300) { r=x; g=0; b=c; }
+  else { r=c; g=0; b=x; }
+
+  r = Math.round((r+m) * 255);
+  g = Math.round((g+m) * 255);
+  b = Math.round((b+m) * 255);
+
+  return "#" + 
+    r.toString(16).padStart(2, "0") +
+    g.toString(16).padStart(2, "0") +
+    b.toString(16).padStart(2, "0");
+}
+
 
 process.on("SIGINT", () => {
   interval_on = 0;
