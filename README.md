@@ -26,3 +26,15 @@ If you already have Node.js (v14.17), click on the ma3akaifire icon.
 The program will automatically connect to the MIDI controller and to MA3, and it will also remotely launch the plugin responsible for feedback communication.
 
 Enjoy testing – the RGB version is on the way!
+
+---------------------------
+
+and now RGB verion out ! V0.6
+
+add in config section!
+
+color_mode = 1; // 0 standard, 1 multicolor, 2 - rainbow
+feedback_mode = 0;  // 0 - light/dark, 1 - blink, 2 - pulse, 3 = rainbow
+
+Happy testing!
+
